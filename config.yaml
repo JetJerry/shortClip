@@ -1,0 +1,28 @@
+models:
+  vision:
+    name: "openai/clip-vit-base-patch32"
+    embedding_dim: 512
+
+  audio:
+    name: "openai/whisper-base"
+    embedding_dim: 1280
+
+  text:
+    name: "sentence-transformers/all-mpnet-base-v2"
+    embedding_dim: 768
+
+  fusion:
+    input_dim: 2560
+    hidden_dims: [1024, 512]
+    output_dim: 1
+
+processing:
+  window_size_sec: 2
+  frame_sampling_fps: 0.5
+  batch_size: 16
+  device: "cuda"
+
+selection:
+  max_clips_per_video: 2
+  min_clip_sec: 2
+  max_clip_sec: 10

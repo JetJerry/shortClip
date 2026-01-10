@@ -1,0 +1,14 @@
+torch
+torchvision
+transformers
+openai-whisper
+sentence-transformers
+clip-anytorch
+opencv-python
+moviepy
+numpy
+scipy
+tqdm
+yt-dlp
+pytest
+PyYAML
