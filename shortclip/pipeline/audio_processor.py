@@ -18,6 +18,16 @@ class TranscriptSegment:
     embedding: np.ndarray  # Whisper encoder embedding
 
 
+@dataclass
+class WindowAudioEmbedding:
+    """Represents an audio embedding aligned to a video window."""
+    window_start_time: float
+    window_end_time: float
+    embedding: np.ndarray  # Whisper encoder embedding for this window
+    transcript: Optional[str]  # Transcription text if speech detected, None otherwise
+    has_speech: bool  # Whether speech was detected in this window
+
+
 class AudioProcessor(BaseProcessor):
     """Processes video segments to extract audio, transcribe, and get embeddings."""
     
@@ -67,50 +77,84 @@ class AudioProcessor(BaseProcessor):
             self._handle_error(e, "setup")
             raise
     
-    def process(self, segment: Tuple[str, str, float, float]) -> List[TranscriptSegment]:
+    def process(self, segment: Tuple[str, str, float, float]) -> WindowAudioEmbedding:
         """
-        Extract audio from video segment, transcribe, and get aligned embeddings.
+        Extract audio from video window, transcribe if speech present, and get embedding.
+        Returns a single embedding aligned to the video window timestamps.
+        Handles videos without speech gracefully by returning audio embedding anyway.
         
         Args:
-            segment: Tuple of (video_id, video_path, start_time, end_time)
+            segment: Tuple of (video_id, video_path, start_time, end_time) representing a video window
             
         Returns:
-            List of TranscriptSegment objects with timestamps, text, and embeddings
+            WindowAudioEmbedding object with window-aligned embedding and optional transcript
         """
         if self.model is None:
             raise RuntimeError("Processor not set up. Call setup() first.")
         
+        video_id, video_path, start_time, end_time = segment
+        
+        # Default: return empty embedding if processing fails
+        default_embedding = WindowAudioEmbedding(
+            window_start_time=start_time,
+            window_end_time=end_time,
+            embedding=np.zeros(self.embedding_dim, dtype=np.float32),
+            transcript=None,
+            has_speech=False
+        )
+        
         try:
-            video_id, video_path, start_time, end_time = segment
-            
             # Check if video file exists
             if not os.path.exists(video_path):
                 self.logger.warning(f"Video file not found: {video_path}")
-                return []
+                return default_embedding
             
-            # Extract audio from video segment
+            # Extract audio from video window
             audio_array = self._extract_audio(video_path, start_time, end_time)
             if audio_array is None:
-                return []
+                self.logger.debug(f"Failed to extract audio for {video_id} window [{start_time:.2f}s-{end_time:.2f}s]")
+                return default_embedding
             
-            # Run transcription and get segments with timestamps
-            transcript_segments = self._transcribe_with_segments(audio_array, start_time)
+            # Even if audio array is empty or silent, we'll still try to get an embedding
+            if len(audio_array) == 0:
+                self.logger.debug(f"Empty audio array for {video_id} window [{start_time:.2f}s-{end_time:.2f}s]")
+                # Create minimal silent audio for embedding extraction
+                duration = end_time - start_time
+                audio_array = np.zeros(max(1, int(duration * self.sample_rate)), dtype=np.float32)
             
-            # Extract embeddings aligned with transcript segments
-            transcript_segments_with_embeddings = self._extract_aligned_embeddings(
-                audio_array, transcript_segments
+            # Extract embedding for the entire window (always done, even without speech)
+            window_embedding = self._extract_window_embedding(audio_array)
+            
+            if window_embedding is None:
+                self.logger.warning(f"Failed to extract embedding for {video_id} window [{start_time:.2f}s-{end_time:.2f}s]")
+                return default_embedding
+            
+            # Try to transcribe to detect speech and get transcript
+            transcript = self._transcribe_audio(audio_array)
+            has_speech = transcript is not None and len(transcript.strip()) > 0
+            
+            if has_speech:
+                self.logger.debug(
+                    f"Processed audio for {video_id} window [{start_time:.2f}s-{end_time:.2f}s]: "
+                    f"speech detected, transcript: '{transcript[:50]}...'"
+                )
+            else:
+                self.logger.debug(
+                    f"Processed audio for {video_id} window [{start_time:.2f}s-{end_time:.2f}s]: "
+                    f"no speech detected, returning audio embedding"
+                )
+            
+            return WindowAudioEmbedding(
+                window_start_time=start_time,
+                window_end_time=end_time,
+                embedding=window_embedding,
+                transcript=transcript if has_speech else None,
+                has_speech=has_speech
             )
-            
-            self.logger.debug(
-                f"Processed audio for {video_id} ({start_time:.2f}s-{end_time:.2f}s): "
-                f"found {len(transcript_segments_with_embeddings)} transcript segments"
-            )
-            
-            return transcript_segments_with_embeddings
             
         except Exception as e:
             self._handle_error(e, f"processing segment {segment}")
-            return []
+            return default_embedding
     
     def _extract_audio(self, video_path: str, start_time: float, end_time: float) -> Optional[np.ndarray]:
         """
@@ -138,11 +182,19 @@ class AudioProcessor(BaseProcessor):
                     return None
                 
                 # Extract audio subclip
-                audio_clip = clip.subclip(start_time, end_time).audio
+                try:
+                    subclip = clip.subclip(start_time, end_time)
+                    audio_clip = subclip.audio if hasattr(subclip, 'audio') else None
+                except Exception as e:
+                    self.logger.debug(f"Could not extract subclip from {video_path}: {e}")
+                    audio_clip = None
                 
                 if audio_clip is None:
-                    self.logger.warning(f"No audio track found in {video_path}")
-                    return None
+                    self.logger.debug(f"No audio track found for {video_path} window [{start_time:.2f}s-{end_time:.2f}s]")
+                    # Return silent audio array instead of None to allow embedding extraction
+                    duration = end_time - start_time
+                    silent_audio = np.zeros(int(duration * self.sample_rate), dtype=np.float32)
+                    return silent_audio
                 
                 # Write to temporary file and load with librosa
                 import tempfile
@@ -171,23 +223,24 @@ class AudioProcessor(BaseProcessor):
             self._handle_error(e, f"extracting audio from {video_path}")
             return None
     
-    def _transcribe_with_segments(
-        self, 
-        audio_array: np.ndarray, 
-        offset_time: float
-    ) -> List[Dict[str, Any]]:
+    def _transcribe_audio(self, audio_array: np.ndarray) -> Optional[str]:
         """
-        Transcribe audio and get segments with timestamps.
-        Uses Whisper's timestamp token capabilities.
+        Transcribe audio and return text if speech is detected.
+        Returns None if no speech is detected or transcription fails.
         
         Args:
             audio_array: Audio array at 16kHz
-            offset_time: Time offset to add to segment timestamps (start_time of video segment)
             
         Returns:
-            List of dictionaries with 'start', 'end', 'text' keys
+            Transcribed text string, or None if no speech detected/failed
         """
         try:
+            # Check if audio has meaningful content (simple energy check)
+            audio_energy = np.mean(np.abs(audio_array))
+            if audio_energy < 1e-6:  # Very quiet or silence
+                self.logger.debug("Audio energy too low, likely silence")
+                return None
+            
             # Process audio for Whisper
             inputs = self.processor(
                 audio_array, 
@@ -195,15 +248,10 @@ class AudioProcessor(BaseProcessor):
                 return_tensors="pt"
             ).to(self.device)
             
-            # Calculate audio duration for timestamp estimation
-            duration = len(audio_array) / self.sample_rate
-            
             # Generate transcription
             with torch.no_grad():
-                # Generate with return_timestamps to enable timestamp tokens
                 generated_ids = self.model.generate(
                     inputs["input_features"],
-                    return_timestamps=True,
                     max_length=448
                 )
                 
@@ -213,86 +261,47 @@ class AudioProcessor(BaseProcessor):
                     skip_special_tokens=True
                 )[0]
             
-            segments = []
+            # Filter out common non-speech outputs
+            transcription = transcription.strip()
             
-            # Extract segments from transcription
-            # For longer transcriptions, split into multiple segments
-            # Timestamp extraction can be improved with word-level alignment if needed
-            if transcription.strip():
-                words = transcription.split()
-                
-                # If transcription is short, create single segment
-                if len(words) <= 10:
-                    segments.append({
-                        "start": offset_time,
-                        "end": offset_time + duration,
-                        "text": transcription
-                    })
-                else:
-                    # Split longer transcriptions into approximately equal segments
-                    num_segments = min(3, max(1, len(words) // 10))
-                    words_per_segment = len(words) // num_segments
-                    segment_duration = duration / num_segments
-                    
-                    for i in range(num_segments):
-                        start_idx = i * words_per_segment
-                        end_idx = (i + 1) * words_per_segment if i < num_segments - 1 else len(words)
-                        segment_text = " ".join(words[start_idx:end_idx])
-                        
-                        if segment_text.strip():
-                            segments.append({
-                                "start": offset_time + i * segment_duration,
-                                "end": offset_time + (i + 1) * segment_duration if i < num_segments - 1 else offset_time + duration,
-                                "text": segment_text.strip()
-                            })
+            # Check if transcription is meaningful (not just silence tokens or empty)
+            if not transcription or transcription.lower() in ["", "thank you", "."]:
+                return None
             
-            return segments
+            # Check for very short transcriptions that might be noise
+            if len(transcription.split()) < 2 and len(transcription) < 3:
+                return None
+            
+            return transcription
             
         except Exception as e:
-            self._handle_error(e, "transcribing audio")
-            # Fallback: create single segment with full duration
-            try:
-                duration = len(audio_array) / self.sample_rate
-                # Try to get at least the transcription text
-                inputs = self.processor(
-                    audio_array, 
-                    sampling_rate=self.sample_rate, 
-                    return_tensors="pt"
-                ).to(self.device)
-                with torch.no_grad():
-                    generated_ids = self.model.generate(inputs["input_features"])
-                    transcription = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-                
-                if transcription.strip():
-                    return [{
-                        "start": offset_time,
-                        "end": offset_time + duration,
-                        "text": transcription
-                    }]
-            except:
-                pass
-            
-            return []
+            # Fail gracefully - return None instead of raising
+            self.logger.debug(f"Transcription failed or no speech detected: {e}")
+            return None
     
-    def _extract_aligned_embeddings(
-        self, 
-        audio_array: np.ndarray, 
-        transcript_segments: List[Dict[str, Any]]
-    ) -> List[TranscriptSegment]:
+    def _extract_window_embedding(self, audio_array: np.ndarray) -> Optional[np.ndarray]:
         """
-        Extract Whisper encoder embeddings aligned with transcript segments.
+        Extract Whisper encoder embedding for the entire audio window.
+        Always extracts embedding regardless of whether speech is present.
         
         Args:
-            audio_array: Full audio array
-            transcript_segments: List of transcript segments with timestamps
+            audio_array: Audio array at 16kHz for the window
             
         Returns:
-            List of TranscriptSegment objects with embeddings
+            numpy array of shape (embedding_dim,) with the window embedding, or None if failed
         """
-        transcript_segments_with_embeddings = []
-        
         try:
-            # Process full audio through encoder once
+            # Ensure minimum audio length (Whisper needs at least some audio)
+            min_length = self.sample_rate * 0.25  # At least 250ms
+            if len(audio_array) < min_length:
+                # Pad with zeros if too short
+                audio_array = np.pad(
+                    audio_array, 
+                    (0, max(0, int(min_length) - len(audio_array))), 
+                    mode='constant'
+                )
+            
+            # Process audio through Whisper encoder
             inputs = self.processor(
                 audio_array, 
                 sampling_rate=self.sample_rate, 
@@ -306,55 +315,21 @@ class AudioProcessor(BaseProcessor):
                 encoder_embeddings = encoder_outputs.last_hidden_state.squeeze(0).cpu().numpy()
                 # Shape: (seq_len, hidden_dim)
             
-            # Align embeddings to transcript segments
-            total_duration = len(audio_array) / self.sample_rate
-            seq_len = encoder_embeddings.shape[0]
+            # Average pooling over sequence length to get single window embedding
+            # This gives us one embedding per window, aligned to the window timestamps
+            window_embedding = np.mean(encoder_embeddings, axis=0)
             
-            for segment in transcript_segments:
-                start_time = segment["start"]
-                end_time = segment["end"]
-                text = segment["text"]
-                
-                # Map time to sequence position
-                # Whisper uses mel-spectrogram frames, roughly 20ms per frame
-                # Each encoder token corresponds to ~2 seconds of audio (approximate)
-                start_ratio = (start_time % total_duration) / total_duration if total_duration > 0 else 0
-                end_ratio = (end_time % total_duration) / total_duration if total_duration > 0 else 1
-                
-                start_idx = int(start_ratio * seq_len)
-                end_idx = int(end_ratio * seq_len)
-                start_idx = max(0, min(start_idx, seq_len - 1))
-                end_idx = max(start_idx + 1, min(end_idx, seq_len))
-                
-                # Average embeddings over the segment
-                segment_embeddings = encoder_embeddings[start_idx:end_idx]
-                segment_embedding = np.mean(segment_embeddings, axis=0)
-                
-                transcript_segments_with_embeddings.append(
-                    TranscriptSegment(
-                        start_time=start_time,
-                        end_time=end_time,
-                        text=text,
-                        embedding=segment_embedding
-                    )
-                )
+            # Normalize embedding
+            norm = np.linalg.norm(window_embedding)
+            if norm > 0:
+                window_embedding = window_embedding / norm
+            
+            return window_embedding.astype(np.float32)
             
         except Exception as e:
-            self._handle_error(e, "extracting aligned embeddings")
-            # Return segments without embeddings if extraction fails
-            for segment in transcript_segments:
-                # Create empty embedding as fallback
-                empty_embedding = np.zeros(self.embedding_dim, dtype=np.float32)
-                transcript_segments_with_embeddings.append(
-                    TranscriptSegment(
-                        start_time=segment["start"],
-                        end_time=segment["end"],
-                        text=segment["text"],
-                        embedding=empty_embedding
-                    )
-                )
-        
-        return transcript_segments_with_embeddings
+            self._handle_error(e, "extracting window embedding")
+            return None
+    
     
     def teardown(self) -> None:
         """
