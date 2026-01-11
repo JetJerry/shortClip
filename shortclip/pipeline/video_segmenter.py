@@ -1,6 +1,6 @@
 import logging
 from typing import List, Tuple, Dict, Any
-from moviepy.editor import VideoFileClip
+from moviepy import VideoFileClip
 
 
 class VideoSegmenter:

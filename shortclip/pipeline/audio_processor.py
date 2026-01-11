@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import os
 from dataclasses import dataclass
-from moviepy.editor import VideoFileClip
+from moviepy import VideoFileClip
 import librosa
 
 from .base import BaseProcessor

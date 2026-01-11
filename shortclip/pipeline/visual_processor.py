@@ -1,7 +1,7 @@
 from typing import Tuple, Dict, Any, List, Union, Optional
 import torch
 from PIL import Image
-from moviepy.editor import VideoFileClip
+from moviepy import VideoFileClip
 import numpy as np
 import os
 
