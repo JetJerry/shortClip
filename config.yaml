@@ -4,25 +4,25 @@ models:
     embedding_dim: 512
 
   audio:
-    name: "openai/whisper-base"
-    embedding_dim: 1280
+    name: "openai/whisper-small"
+    embedding_dim: 512
 
   text:
-    name: "sentence-transformers/all-mpnet-base-v2"
-    embedding_dim: 768
+    name: "sentence-transformers/all-MiniLM-L12-v2"
+    embedding_dim: 384
 
   fusion:
-    input_dim: 2560
-    hidden_dims: [1024, 512]
-    output_dim: 1
+    input_dim: 1408   # 512 + 512 + 384
+    hidden_dims: [768, 384]
+    output_dim: 2
 
 processing:
-  window_size_sec: 2
-  frame_sampling_fps: 0.5
-  batch_size: 16
+  window_size_sec: 3
+  frame_sampling_fps: 0.33
+  batch_size: 24
   device: "cuda"
 
 selection:
-  max_clips_per_video: 2
-  min_clip_sec: 2
-  max_clip_sec: 10
+  max_clips_per_video: 4
+  min_clip_sec: 25
+  max_clip_sec: 60

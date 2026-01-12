@@ -1,14 +1,30 @@
-torch
-torchvision
-transformers
+# --- Core GPU stack ---
+torchvision==0.16.0+cu121
+torch==2.1.0+cu121
+torchaudio==2.1.0+cu121
+
+# --- Transformers & NLP ---
+transformers==4.35.2
+tokenizers==0.15.2
+sentence-transformers==2.6.1
+
+# --- Audio ---
 openai-whisper
-sentence-transformers
-clip-anytorch
-opencv-python
-moviepy
-numpy
-scipy
-tqdm
-yt-dlp
-pytest
+librosa==0.11.0
+soundfile==0.13.1
+
+# --- Video ---
+opencv-python==4.9.0.80
+moviepy==2.2.1
+imageio==2.37.2
+imageio-ffmpeg==0.6.0
+
+# --- Core scientific stack ---
+numpy==1.26.4
+scipy==1.17.0
+tqdm==4.67.1
+
+# --- Utilities ---
 PyYAML
+Pillow==11.3.0
+pytest
