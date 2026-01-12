@@ -14,6 +14,7 @@ class Moment:
     visual_embedding: Optional[np.ndarray] = None
     audio_embedding: Optional[np.ndarray] = None
     text_embedding: Optional[np.ndarray] = None
+    text_similarity_score: Optional[float] = None
     label: Optional[str] = None
     score: Optional[float] = None
     

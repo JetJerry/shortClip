@@ -51,7 +51,10 @@ class TextProcessor(BaseProcessor):
             
             # Load Sentence-BERT model
             # SentenceTransformer handles device placement automatically
-            self.model = SentenceTransformer(self.model_name, device=str(self.device))
+            self.model = SentenceTransformer(
+                self.model_name,
+                device=str(self.device)
+            )
             
             # Freeze all model weights
             for param in self.model.parameters():

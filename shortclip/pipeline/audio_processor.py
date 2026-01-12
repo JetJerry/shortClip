@@ -4,7 +4,9 @@ import numpy as np
 import os
 from dataclasses import dataclass
 from moviepy import VideoFileClip
-import librosa
+import soundfile as sf
+from scipy.signal import resample_poly
+import math
 
 from .base import BaseProcessor
 
@@ -51,7 +53,7 @@ class AudioProcessor(BaseProcessor):
         Model weights are frozen.
         """
         try:
-            from transformers import WhisperModel, WhisperProcessor
+            from transformers import WhisperForConditionalGeneration, WhisperProcessor
             
             # Get model name from config
             self.model_name = self.config.get("models", {}).get("audio", {}).get("name", "openai/whisper-base")
@@ -59,8 +61,8 @@ class AudioProcessor(BaseProcessor):
             
             self.logger.info(f"Loading Whisper model: {self.model_name}")
             
-            # Load Whisper model and processor
-            self.model = WhisperModel.from_pretrained(self.model_name)
+            # Load Whisper model and processor (use ForConditionalGeneration for generate() support)
+            self.model = WhisperForConditionalGeneration.from_pretrained(self.model_name, use_safetensors=True)
             self.processor = WhisperProcessor.from_pretrained(self.model_name)
             
             # Freeze all model weights
@@ -183,7 +185,7 @@ class AudioProcessor(BaseProcessor):
                 
                 # Extract audio subclip
                 try:
-                    subclip = clip.subclip(start_time, end_time)
+                    subclip = clip.subclipped(start_time, end_time)
                     audio_clip = subclip.audio if hasattr(subclip, 'audio') else None
                 except Exception as e:
                     self.logger.debug(f"Could not extract subclip from {video_path}: {e}")
@@ -205,13 +207,24 @@ class AudioProcessor(BaseProcessor):
                     audio_clip.write_audiofile(
                         tmp_path, 
                         fps=self.sample_rate, 
-                        verbose=False, 
                         logger=None
                     )
                     
-                    # Load audio with librosa to get numpy array
-                    audio_array, sr = librosa.load(tmp_path, sr=self.sample_rate, mono=True)
-                    
+                    # Load audio with soundfile to get numpy array
+                    audio_array, sr = sf.read(tmp_path, dtype='float32')
+                    # Convert to mono if necessary
+                    if audio_array.ndim > 1:
+                        audio_array = np.mean(audio_array, axis=1)
+                    # Resample if sample rate doesn't match desired sample_rate
+                    if sr != self.sample_rate:
+                        # Use resample_poly with reduced up/down to avoid large factors
+                        g = math.gcd(sr, self.sample_rate)
+                        up = self.sample_rate // g
+                        down = sr // g
+                        audio_array = resample_poly(audio_array, up, down).astype(np.float32)
+                    # Ensure dtype float32
+                    audio_array = audio_array.astype(np.float32)
+
                     return audio_array
                     
                 finally:
@@ -310,6 +323,7 @@ class AudioProcessor(BaseProcessor):
             
             with torch.no_grad():
                 # Get encoder outputs (embeddings)
+                # For WhisperForConditionalGeneration, encoder is at model.model.encoder
                 encoder_outputs = self.model.model.encoder(**inputs)
                 # encoder_outputs.last_hidden_state shape: (batch, seq_len, hidden_dim)
                 encoder_embeddings = encoder_outputs.last_hidden_state.squeeze(0).cpu().numpy()

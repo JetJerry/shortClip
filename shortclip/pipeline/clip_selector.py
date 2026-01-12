@@ -243,8 +243,15 @@ class ClipSelector:
             elif duration > self.max_clip_sec:
                 # Trim clip to meet maximum duration
                 center = (start_time + end_time) / 2.0
-                start_time = center - self.max_clip_sec / 2.0
+                start_time = max(0, center - self.max_clip_sec / 2.0)
                 end_time = start_time + self.max_clip_sec
+            
+            # Final validation: ensure start_time >= 0 (already handled above, but double-check)
+            start_time = max(0, start_time)
+            
+            # Skip if the adjusted clip now overlaps with used times
+            if self._overlaps_with_used(start_time, end_time, used_times):
+                continue
             
             # Add clip
             selected_clips.append((video_id, float(start_time), float(end_time)))

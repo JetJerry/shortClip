@@ -3,6 +3,7 @@ import logging
 import os
 from collections import defaultdict
 import numpy as np
+from tqdm import tqdm
 
 from .video_segmenter import VideoSegmenter
 from .visual_processor import VisualProcessor
@@ -13,6 +14,7 @@ from .feature_fusion import FeatureFusion
 from .clip_selector import ClipSelector
 from .video_assembler import VideoAssembler
 from .moment import Moment
+from .checkpoint import CheckpointManager
 
 
 class MultimodalPipeline:
@@ -30,17 +32,22 @@ class MultimodalPipeline:
     8. Video assembly - assemble selected clips into final video
     """
     
-    def __init__(self, config: Dict[str, Any], model_path: Optional[str] = None):
+    def __init__(self, config: Dict[str, Any], model_path: Optional[str] = None, enable_checkpoints: bool = False):
         """
         Initialize the multimodal pipeline.
         
         Args:
             config: Configuration dictionary containing all model and processing parameters
             model_path: Path to trained FusionModel checkpoint (required for scoring)
+            enable_checkpoints: Enable checkpoint saving for pipeline recovery
         """
         self.config = config
         self.model_path = model_path
+        self.enable_checkpoints = enable_checkpoints
         self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Initialize checkpoint manager if enabled
+        self.checkpoint_mgr = CheckpointManager() if enable_checkpoints else None
         
         # Initialize all processors
         self.segmenter = VideoSegmenter(config)
@@ -52,13 +59,15 @@ class MultimodalPipeline:
         self.clip_selector = ClipSelector(config)
         self.video_assembler = VideoAssembler(config)
         
-        self.logger.info("MultimodalPipeline initialized")
+        self.logger.info("MultimodalPipeline initialized" + (" with checkpoints enabled" if enable_checkpoints else ""))
     
     def process(
         self,
         video_paths: List[str],
         output_path: str,
-        user_query: Optional[str] = None
+        user_query: Optional[str] = None,
+        limit_segments: Optional[int] = None,
+        run_id: str = "default"
     ) -> str:
         """
         Process multiple videos and generate a short highlight video.
@@ -67,6 +76,8 @@ class MultimodalPipeline:
             video_paths: List of paths to input video files
             output_path: Path to save the output video
             user_query: Optional query string for text-based filtering
+            limit_segments: Optional limit on number of segments (for debugging)
+            run_id: Unique identifier for this pipeline run (used for checkpoints)
         
         Returns:
             Path to the output video file
@@ -87,6 +98,11 @@ class MultimodalPipeline:
             video_segments = self.segmenter.segment_videos(video_paths)
             if not video_segments:
                 raise RuntimeError("No video segments generated")
+            
+            if limit_segments:
+                self.logger.info(f"Limiting to first {limit_segments} segments (debug mode)")
+                video_segments = video_segments[:limit_segments]
+                
             self.logger.info(f"Generated {len(video_segments)} segments")
             
             # Build video_path_map for later use
@@ -95,21 +111,37 @@ class MultimodalPipeline:
                 if video_id not in video_path_map:
                     video_path_map[video_id] = video_path
             
+            # Save segmentation checkpoint
+            if self.checkpoint_mgr:
+                self.checkpoint_mgr.save_checkpoint("video_segments", video_segments, run_id)
+            
             # Stage 2: Visual processing
             self.logger.info("Stage 2: Processing visual features...")
-            self.visual_processor.setup()
             try:
-                visual_embeddings = self.visual_processor.process(video_segments)
+                # Try to load from checkpoint first
+                visual_embeddings = None
+                if self.checkpoint_mgr:
+                    visual_embeddings = self.checkpoint_mgr.load_checkpoint("visual_embeddings", run_id)
+                
+                if visual_embeddings is None:
+                    self.visual_processor.setup()
+                    visual_embeddings = self.visual_processor.process(video_segments)
+                    self.visual_processor.teardown()
+                    if self.checkpoint_mgr:
+                        self.checkpoint_mgr.save_checkpoint("visual_embeddings", visual_embeddings, run_id)
+                else:
+                    self.logger.info("Loaded visual embeddings from checkpoint")
+                    
                 self.logger.info(f"Processed {len(visual_embeddings)} visual embeddings")
             finally:
-                self.visual_processor.teardown()
+                pass
             
             # Stage 3: Audio processing
             self.logger.info("Stage 3: Processing audio features...")
             self.audio_processor.setup()
             try:
                 audio_embeddings = []
-                for segment in video_segments:
+                for segment in tqdm(video_segments, desc="Processing Audio"):
                     audio_emb = self.audio_processor.process(segment)
                     audio_embeddings.append(audio_emb)
                 self.logger.info(f"Processed {len(audio_embeddings)} audio embeddings")
@@ -371,6 +403,7 @@ class MultimodalPipeline:
                 visual_embedding=ctx.visual_embedding,
                 audio_embedding=ctx.audio_embedding,
                 text_embedding=ctx.text_embedding,
+                text_similarity_score=ctx.text_similarity_score,
                 label=None,
                 score=None  # Will be set by feature fusion
             )

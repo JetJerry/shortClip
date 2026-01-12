@@ -21,13 +21,18 @@ class BaseProcessor(ABC):
         # Setup device from config
         try:
             device_name = config.get("processing", {}).get("device", "cpu")
-            if device_name == "cuda" and torch.cuda.is_available():
+            # Check for CUDA availability; ensure torch can see GPU
+            cuda_available = torch.cuda.is_available()
+            cuda_device_count = torch.cuda.device_count() if cuda_available else 0
+            
+            if device_name == "cuda" and cuda_available and cuda_device_count > 0:
                 self.device = torch.device("cuda")
-                self.logger.info(f"Using device: {self.device}")
+                self.logger.info(f"Using device: {self.device} (GPU: {torch.cuda.get_device_name(0)})")
             else:
                 self.device = torch.device("cpu")
                 if device_name == "cuda":
-                    self.logger.warning("CUDA requested but not available, using CPU")
+                    reason = "not available" if not cuda_available else f"no devices found (count: {cuda_device_count})"
+                    self.logger.warning(f"CUDA requested but {reason}, using CPU")
                 else:
                     self.logger.info(f"Using device: {self.device}")
         except Exception as e:

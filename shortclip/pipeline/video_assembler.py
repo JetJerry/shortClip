@@ -87,7 +87,6 @@ class VideoAssembler:
                 output_path,
                 codec='libx264',
                 audio_codec='aac',
-                verbose=False,
                 logger=None
             )
             
@@ -149,14 +148,14 @@ class VideoAssembler:
             
             # Extract subclip (preserves audio by default)
             try:
-                subclip = clip.subclip(start_time, end_time)
+                subclip = clip.subclipped(start_time, end_time)
                 self.logger.debug(
                     f"Extracted clip from {video_path}: [{start_time:.2f}s, {end_time:.2f}s] "
                     f"(duration: {end_time - start_time:.2f}s)"
                 )
                 # Note: We close the original clip but return the subclip
                 # The subclip will be closed by the caller
-                clip.close()
+                # clip.close()  <-- Do NOT close here, it breaks the subclip
                 return subclip
                 
             except Exception as e:
