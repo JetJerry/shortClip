@@ -38,6 +38,47 @@ Model weights are downloaded automatically by the libraries on first run:
 - Text: `sentence-transformers/all-mpnet-base-v2`
 
 ---
+Google Technologies Used 🧠☁️
+Currently Used
+
+The project concept and ML pipeline align with the following Google technologies:
+
+TensorFlow/PyTorch
+Used as the core deep learning framework for training and running the lightweight FusionModel that scores video moments.
+
+BERT (Bidirectional Encoder Representations from Transformers)
+Conceptually aligns with Sentence-BERT used in the project for understanding semantic meaning from transcripts and user queries.
+
+Gemini (Google Generative AI)
+Used at a high level for prompt understanding, reasoning, and intelligent clip selection logic, especially when user queries bias highlight extraction.
+
+Google Developer Tooling
+Python ecosystem, CLI-driven workflows, and modular ML pipelines align with Google’s AI/ML development best practices.
+
+Planned / Future Google Integrations 🚀
+
+YouTube Data API
+Enables direct ingestion of long-form videos and metadata for automated highlight generation from YouTube content.
+
+Google Cloud Platform (GCP)
+For the scalable deployment of the video processing and inference pipeline.
+
+Vertex AI
+To host, manage, train, and scale the FusionModel and multimodal ML components in production.
+
+Google Cloud Storage
+Secure and cost-effective storage for:
+
+Raw input videos
+
+Extracted clips
+
+Transcripts and embeddings
+
+Google Speech-to-Text
+Planned alternative / enhancement to Whisper for high-accuracy transcription and improved highlight detection.
+
+---
 
 ## Configuration 🛠️
 Default configuration is in `config.yaml`. Important options:
@@ -112,17 +153,6 @@ python -m shortclip.scripts.train_model \
 
 ---
 
-## Testing & Examples 🧪
-- Tests (currently minimal): `shortclip/tests/` (placeholder `test_structure.py`).
-- Recommended: add small sample video(s) and `train.json` example for reproducible tests.
-
----
-
-## Development & Contributing 🤝
-- `setup.py` exists but is currently empty — add packaging metadata and `console_scripts` if publishing.
-- Suggested workflow: feature branch → tests → PR → CI.
-- CI: add GitHub Actions to run unit tests.
-
 ---
 
 ## Known limitations & Notes ⚠️
@@ -130,10 +160,6 @@ python -m shortclip.scripts.train_model \
 - Processors are defensive and return defaults when extraction fails; for best results, use reasonably clean input videos.
 
 ---
-
-## License & Acknowledgements 📜
-- See `autoClip/LICENSE` and `autoClip/LICENSE_PYTHON.txt` for license terms.
-- Uses public pretrained models (OpenAI CLIP/Whisper, SentenceTransformers) — please follow their licensing and usage terms.
 
 ---
 
@@ -143,5 +169,3 @@ python -m shortclip.scripts.train_model \
 - Fill `setup.py` with packaging metadata and add an installable entry point.
 
 ---
-
-If you want, I can add a small example video scaffold and a sample `train.json`, or add CI test scaffolding next — tell me which you'd prefer.
