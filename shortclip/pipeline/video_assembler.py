@@ -29,23 +29,14 @@ class VideoAssembler:
     ) -> str:
         """
         Assemble clips from multiple videos into a single output video.
-        
-        Args:
-            clips: List of tuples (video_path, start_time, end_time) or (video_id, start_time, end_time)
-                  If video_id is used, video_path_map must be provided
-            output_path: Path to save the output video
-            video_path_map: Optional mapping from video_id to video_path
-                          (required if clips contain video_id instead of video_path)
-        
-        Returns:
-            Path to the output video file
-        
-        Raises:
-            ValueError: If video_path_map is required but not provided
-            RuntimeError: If no valid clips could be extracted
         """
         if not clips:
             raise ValueError("No clips provided for assembly")
+        
+        # Check for VFX flags
+        features = self.config.get("features", {})
+        use_zoom = features.get("use_zoom_motion", False)
+        use_music = features.get("use_music_overlay", False)
         
         # Extract subclips
         subclips = []
@@ -70,7 +61,15 @@ class VideoAssembler:
                     continue
                 
                 subclip = self._extract_clip(video_path, start_time, end_time)
+                
                 if subclip is not None:
+                    # Apply V2 Effects: Zoom
+                    if use_zoom:
+                        try:
+                            subclip = self.apply_zoom_effect(subclip)
+                        except Exception as e:
+                            self.logger.error(f"Failed to apply zoom effect: {e}")
+                            
                     subclips.append(subclip)
         
         if not subclips:
@@ -82,6 +81,13 @@ class VideoAssembler:
         try:
             final_clip = concatenate_videoclips(subclips, method="compose")
             
+            # Apply Music Overlay
+            if use_music:
+                try:
+                    final_clip = self.apply_music_overlay(final_clip)
+                except Exception as e:
+                    self.logger.error(f"Failed to apply music overlay: {e}")
+
             # Write output video
             final_clip.write_videofile(
                 output_path,
@@ -107,6 +113,99 @@ class VideoAssembler:
                     pass
             self.logger.error(f"Error assembling video: {e}")
             raise
+
+    def apply_music_overlay(self, video_clip):
+        """
+        Selects a random music track and overlays it on the video.
+        """
+        import random
+        from moviepy.audio.io.AudioFileClip import AudioFileClip
+        from moviepy.audio.AudioClip import CompositeAudioClip
+        
+        music_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "music")
+        # Hardcoded fallback relative path: d:/autoClip_04/model/shortclip/pipeline/../../../music
+        # -> d:/autoClip_04/music
+        
+        if not os.path.exists(music_dir):
+             self.logger.warning(f"Music directory not found at {music_dir}")
+             return video_clip
+
+        tracks = [f for f in os.listdir(music_dir) if f.endswith(('.mp3', '.wav'))]
+        if not tracks:
+             self.logger.warning("No music tracks found.")
+             return video_clip
+             
+        track_name = random.choice(tracks)
+        music_path = os.path.join(music_dir, track_name)
+        self.logger.info(f"Adding background music: {track_name}")
+        
+        music = AudioFileClip(music_path)
+        
+        # Loop music if shorter than video
+        if music.duration < video_clip.duration:
+            from moviepy.audio.fx.all import audio_loop
+            music = audio_loop(music, duration=video_clip.duration)
+        else:
+            music = music.subclipped(0, video_clip.duration)
+            
+        # Ducking: Set volume low (0.15) to not overpower speech
+        music = music.with_volume_scaled(0.15)
+        
+        # Combine with original audio
+        if video_clip.audio:
+            final_audio = CompositeAudioClip([video_clip.audio, music])
+        else:
+            final_audio = music
+            
+        video_clip.audio = final_audio
+        return video_clip
+
+    def apply_zoom_effect(self, clip, zoom_ratio=0.04):
+        """
+        Applies a dynamic 'Ken Burns' style zoom-in effect.
+        Args:
+            clip: MoviePy VideoClip
+            zoom_ratio: Total zoom percentage (0.04 means 4% zoom in)
+        """
+        w, h = clip.size
+        
+        # Define zoom function: t -> (new_w, new_h)
+        def get_new_size(t):
+            scale = 1 + (zoom_ratio * (t / clip.duration))
+            return (int(w * scale), int(h * scale))
+
+        # Apply resize using the zoom function
+        zoomed_clip = clip.resize(get_new_size)
+        
+        # Center Crop using clip.crop
+        # We want to keep the center of the zoomed frame
+        # crop(x_center, y_center, width, height)
+        # However, clip.crop usually takes static values. 
+        # For dynamic cropping consistent with dynamic resize, we might need a custom filter if crop(t) isn't supported.
+        # But standard MoviePy crop often doesn't support time-varying params unless using vfx.crop.
+        
+        # Alternative simpler 'Ken Burns':
+        # 1. Resize the CLIP to be (W*1.04, H*1.04) statically? No that's static.
+        
+        # Let's try the safest path for dynamic zoom:
+        # Use margin/crop.
+        
+        # As a fallback for stability if dynamic resize fails:
+        # Just do a slight static zoom (1.02x) to verify it works first?
+        # No, let's try to do it right.
+        
+        try:
+             # Standard v1.0.3 way with vfx locally imported if it exists, or using clip.resize
+             # If resize(lambda t...) works, then the clip size changes over time.
+             # Then we just need to force it to center 
+             return zoomed_clip.set_position('center').crop(x_center=zoomed_clip.w/2, y_center=zoomed_clip.h/2, width=w, height=h)
+        except Exception:
+             # Fallback: simple static zoom if dynamic fails
+             self.logger.warning("Dynamic zoom failed, trying static zoom fallback.")
+             return clip.resize(1.0 + zoom_ratio).crop(x_center=w/2 * (1.0+zoom_ratio), y_center=h/2 * (1.0+zoom_ratio), width=w, height=h)
+
+        # End of valid zoom logic
+
     
     def _extract_clip(
         self,

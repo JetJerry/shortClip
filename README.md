@@ -1,147 +1,166 @@
-# autoClip / shortClip — Automatic Video Highlighting ⚡️
+# shortClip
 
-**Short description:** autoClip (the `shortclip` module) extracts and selects short, high-quality highlight clips from long videos using a multimodal pipeline (visual CLIP features, Whisper audio + transcripts, and Sentence-BERT text embeddings) and a small trainable fusion model.
-
----
-
-## Features 🔧
-- Segment videos into fixed-size windows and extract one-frame visual embeddings (CLIP).
-- Extract audio, transcribe with Whisper, and compute Whisper encoder embeddings.
-- Compute semantic text embeddings using Sentence-BERT (for transcripts and optional user queries).
-- Build scene contexts combining visual/audio/text features.
-- Score moments via a lightweight FusionModel and select top clips with temporal smoothing and non-overlap constraints.
-- Assemble selected clips into a single highlight video (preserves audio).
-- CLI scripts for inference (`shortclip/scripts/process_video.py`) and training (`shortclip/scripts/train_model.py`).
+**shortClip** is an intelligent, multimodal video highlight generator. It automates the process of summarizing long-form content by analyzing visual, auditory, and semantic features to extract and remix the most meaningful moments into a concise highlight reel.
 
 ---
 
-## Quick Start — Installation ✅
+## 🚀 Project Goal
 
-**Prerequisites:**
-- Python 3.8+ (conda recommended)
-- ffmpeg binary available in PATH (or use the included `ffmpeg/` folder)
-- (Optional) CUDA-enabled GPU for faster inference/training
+Build a system that takes multiple long videos and produces a single short video by:
+1.  **Understanding** content using multiple modalities (Video, Audio, Language).
+2.  **Scoring** moments based on "interestingness" and relevance.
+3.  **Preserving** context (not just random clips).
+4.  **Remixing** selected clips into a seamless output.
 
-Install dependencies (example):
+**Philosophy & Constraints:**
+-   **No Frontend**: Pure backend processing pipeline.
+-   **No Deployment**: Runs locally as a CLI tool.
+-   **Modularity**: One responsibility per file.
+-   **Simplicity**: One step at a time.
 
+---
+
+## 🏗️ Architecture
+
+The system follows a linear pipeline architecture where data flows through distinct processing stages.
+
+```mermaid
+graph TD
+    A[Input Videos] --> B[Segmentation]
+    B --> C{Multimodal Extraction}
+    C -->|Vision| D[CLIP Embeddings]
+    C -->|Audio| E[Whisper Features]
+    C -->|Text| F[S-BERT Embeddings]
+    D & E & F --> G[Scene Context Builder]
+    G --> H[Feature Fusion & Scoring]
+    H --> I[Clip Selection]
+    I --> J[Video Assembly]
+    J --> K[Final Highlight Video]
+```
+
+### Key Components
+
+1.  **`MultimodalPipeline` (`shortclip/pipeline/multimodal_pipeline.py`)**
+    The central orchestrator that manages the flow of data between all other components. It implements the 8-stage process:
+    1.  **Segmentation**: Splitting video into fixed time windows (default: 2s).
+    2.  **Visual Processing**: Extracting frame embeddings using `openai/clip-vit-base-patch32`.
+    3.  **Audio Processing**: Extracting audio features and transcripts using `openai/whisper`.
+    4.  **Text Processing**: Generating semantic embeddings using `sentence-transformers/all-mpnet-base-v2`.
+    5.  **Scene Context**: Aggregating raw features into `SceneContext` objects containing all metadata for a window.
+    6.  **Fusion (Scoring)**: Using a trained `FusionModel` to predict an "interest score" for each moment.
+    7.  **Selection**: Choosing the best clips based on scores, ensuring diversity and constraints.
+    8.  **Assembly**: Stitching selected clips together using `moviepy`.
+
+2.  **`FusionModel` (`shortclip/models/fusion_model.py`)**
+    A lightweight neural network that takes concatenated embeddings (Visual + Audio + Text) and outputs a scalar score (0-1).
+
+3.  **`FeatureFusion` (`shortclip/pipeline/feature_fusion.py`)**
+    Handles the mechanics of scoring, including:
+    -   Embedding normalization (L2).
+    -   Temporal smoothing (Gaussian filter) to ensure coherent clip selection (smoothing out noise).
+
+---
+
+## ⚙️ Configuration
+
+The system is highly configurable via `config.yaml`.
+
+```yaml
+models:
+  vision:
+    name: "openai/clip-vit-base-patch32"
+    embedding_dim: 512
+  audio:
+    name: "openai/whisper-base"
+    embedding_dim: 1280
+  text:
+    name: "sentence-transformers/all-mpnet-base-v2"  # Excellent for semantic search
+    embedding_dim: 768
+  fusion:
+    input_dim: 2560  # 512 + 1280 + 768
+    hidden_dims: [1024, 512]
+    output_dim: 1    # Single scalar score
+
+processing:
+  window_size_sec: 2       # Base unit of analysis
+  frame_sampling_fps: 0.5  # Frames per second to analyze for CLIP
+  batch_size: 16           # Inference batch size
+  device: "cuda"           # 'cuda' or 'cpu'
+  temporal_smoothing_sigma: 1.0 # Sigma for gaussian smoothing of scores
+
+selection:
+  max_clips_per_video: 2   # Max highlights to pull from a single source
+  min_clip_sec: 2          # Minimum duration of a highlight
+  max_clip_sec: 10         # Maximum duration of a highlight
+```
+
+---
+
+## 📦 structure
+
+```text
+d:\autoClip_01
+├── autoClip/               # Python Environment (Virtual Env)
+├── shortclip/              # Source Package
+│   ├── models/             # PyTorch Model Definitions
+│   │   └── fusion_model.py
+│   ├── pipeline/           # Core Processing Logic
+│   │   ├── multimodal_pipeline.py  # Orchestrator
+│   │   ├── feature_fusion.py       # Scoring & Smoothing
+│   │   ├── scene_context.py        # Data Aggregation
+│   │   ├── video_segmenter.py      # Video Slicing
+│   │   ├── ... (processors for audio, visual, text)
+│   └── scripts/            # Entry points
+│       └── process_video.py
+├── config.yaml             # Main Configuration
+├── requirements.txt        # Dependencies
+├── setup.py                # Package Setup (Empty/WIP)
+└── README.md               # You are here
+```
+
+---
+
+## 🛠️ Installation & Usage
+
+### 1. Environment Setup
+
+Access the environment (if not using the pre-packaged `autoClip` env):
 ```bash
-conda create -n autoclip python=3.11 -y
-conda activate autoclip
 pip install -r requirements.txt
 ```
 
-Key packages: `torch`, `transformers`, `openai-whisper`, `sentence-transformers`, `clip-anytorch`, `moviepy`, `librosa`.
+### 2. Running the Pipeline
 
-Model weights are downloaded automatically by the libraries on first run:
-- Vision: `openai/clip-vit-base-patch32`
-- Audio: `openai/whisper-base`
-- Text: `sentence-transformers/all-mpnet-base-v2`
+Use the `process_video.py` script to generate highlights.
 
----
-
-## Configuration 🛠️
-Default configuration is in `config.yaml`. Important options:
-
-- `models` — names & embedding dims for vision, audio, text, fusion
-- `processing` — `window_size_sec`, `batch_size`, `device`, `temporal_smoothing_sigma`
-- `selection` — `max_clips_per_video`, `min_clip_sec`, `max_clip_sec`
-
-Example excerpt:
-
-```yaml
-processing:
-  window_size_sec: 2
-  batch_size: 16
-  device: "cuda"
-selection:
-  max_clips_per_video: 2
-  min_clip_sec: 2
-  max_clip_sec: 10
-```
-
----
-
-## Usage — Inference CLI 🏃
-
-Process video(s) and generate a highlights video:
-
+**Syntax:**
 ```bash
-python -m shortclip.scripts.process_video \
-  --videos path/to/video1.mp4 path/to/video2.mp4 \
-  --output path/to/highlights.mp4 \
-  --config config.yaml \
-  --query "goal celebration"
+python shortclip/scripts/process_video.py \
+    --videos <path1> <path2> ... \
+    --output <output_path> \
+    [--query <text_query>] \
+    [--config <config_path>]
 ```
-- `--query` (optional): biases selection using text similarity via the `TextProcessor`.
-- The script prints the final output path on success.
 
----
-
-## Usage — Training FusionModel 🧠
-
-Prepare training data as `train.json` or `train.pkl` containing a list of `Moment` objects (see `shortclip/pipeline/moment.py`).
-
-Train example:
-
+**Example:**
+Create a highlight reel from a podcast, focusing on "technology trends":
 ```bash
-python -m shortclip.scripts.train_model \
-  --data_dir path/to/data_dir_or_file \
-  --epochs 10 \
-  --config config.yaml \
-  --output_dir checkpoints \
-  --batch_size 32
+python shortclip/scripts/process_video.py \
+    --videos data/podcast_full.mp4 \
+    --output results/highlight_reel.mp4 \
+    --query "future technology trends ai"
 ```
-- `HighlightDataset` expects Moments with embeddings and optional `label` or `score`.
-- Best checkpoint is saved as `best_model.pt` in `--output_dir`.
+
+### 3. Troubleshooting
+
+*   **Missing Model Error**: The pipeline requires a trained `FusionModel`. Currently, the `MultimodalPipeline` expects a `model_path` argument, but the CLI script `process_video.py` does not yet expose this argument. *This is a known issue being addressed.*
+*   **CUDA OOM**: If you run out of memory, try reducing `batch_size` in `config.yaml` or switching `device` to `"cpu"`.
 
 ---
 
-## API Reference (high-level) 📚
-- `shortclip.pipeline.MultimodalPipeline(config, model_path=None)` — orchestrates the pipeline.
-  - `process(video_paths, output_path, user_query=None)` → returns output video path.
-  - `generate_explanations(...)` → returns per-clip explanations (dominant modality, transcript, score).
-- Processors: `VideoSegmenter`, `VisualProcessor`, `AudioProcessor`, `TextProcessor`, `SceneContextBuilder`, `FeatureFusion`, `ClipSelector`, `VideoAssembler`.
-- Model: `shortclip.models.FusionModel` — MLP used for scoring.
-- Training: `shortclip.training.Trainer` and `shortclip.training.HighlightDataset`.
+## 🧠 Development Status
 
----
-
-## Output & Explanations 📄
-- Final output: assembled MP4 with selected clips.
-- Use `MultimodalPipeline.generate_explanations` to obtain human-readable summaries per selected clip (relevance score, strongest modality, transcript snippet).
-
----
-
-## Testing & Examples 🧪
-- Tests (currently minimal): `shortclip/tests/` (placeholder `test_structure.py`).
-- Recommended: add small sample video(s) and `train.json` example for reproducible tests.
-
----
-
-## Development & Contributing 🤝
-- `setup.py` exists but is currently empty — add packaging metadata and `console_scripts` if publishing.
-- Suggested workflow: feature branch → tests → PR → CI.
-- CI: add GitHub Actions to run unit tests.
-
----
-
-## Known limitations & Notes ⚠️
-- GPU recommended for speed. Whisper+CLIP on CPU is slow.
-- Processors are defensive and return defaults when extraction fails; for best results, use reasonably clean input videos.
-
----
-
-## License & Acknowledgements 📜
-- See `autoClip/LICENSE` and `autoClip/LICENSE_PYTHON.txt` for license terms.
-- Uses public pretrained models (OpenAI CLIP/Whisper, SentenceTransformers) — please follow their licensing and usage terms.
-
----
-
-## Next steps (suggestions) ✅
-- Add example dataset (`data/sample.mp4`, `data/train.json`) and a short tutorial script.
-- Add end-to-end integration tests and CI.
-- Fill `setup.py` with packaging metadata and add an installable entry point.
-
----
-
-If you want, I can add a small example video scaffold and a sample `train.json`, or add CI test scaffolding next — tell me which you'd prefer.
+*   **Pipeline**: Implemented (Segmentation -> Selection -> Assembly).
+*   **Models**: Wrappers for CLIP, Whisper, MPNet implemented.
+*   **Fusion**: Model architecture defined, but pre-trained weights are currently missing from the repo.
+*   **CLI**: Basic implementation available.

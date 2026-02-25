@@ -5,14 +5,14 @@ models:
 
   audio:
     name: "openai/whisper-small"
-    embedding_dim: 512
+    embedding_dim: 768
 
   text:
     name: "sentence-transformers/all-MiniLM-L12-v2"
     embedding_dim: 384
 
   fusion:
-    input_dim: 1408   # 512 + 512 + 384
+    input_dim: 1664   # 512 + 768 + 384
     hidden_dims: [768, 384]
     output_dim: 2
 
